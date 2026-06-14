@@ -7,28 +7,93 @@ class UncaughtListScreen extends StatefulWidget {
   const UncaughtListScreen({super.key});
 
   @override
-  State<StatefulWidget> createState() => _UncaughtListScreenState();
+  State<UncaughtListScreen> createState() => _UncaughtListScreenState();
 }
 
 class _UncaughtListScreenState extends State<UncaughtListScreen> {
-  late Future<List<PokemonListResult>> pokemonFuture;
+  final List<PokemonListResult> _pokemons = [];
+
+  final ScrollController _scrollController = ScrollController();
+
+  int _offset = 0;
+  final int _limit = 50;
+
+  bool _isLoadingInitial = true;
+  bool _isLoadingMore = false;
+  bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
-    pokemonFuture = PokeApiService.fetchPokemonList();
+    _loadInitialData();
+
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >=
+              _scrollController.position.maxScrollExtent - 200 &&
+          !_isLoadingMore) {
+        _loadMoreData();
+      }
+    });
   }
 
-  Future<void> _refreshData() async {
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadInitialData() async {
     setState(() {
-      pokemonFuture = PokeApiService.fetchPokemonList();
+      _isLoadingInitial = true;
+      _hasError = false;
+      _offset = 0;
+      _pokemons.clear();
     });
 
     try {
-      await pokemonFuture;
+      final data = await PokeApiService.fetchPokemonList(
+        limit: _limit,
+        offset: _offset,
+      );
+      setState(() {
+        _pokemons.addAll(data);
+        _offset += _limit;
+        _isLoadingInitial = false;
+      });
     } catch (e) {
-      _showErrorBanner('Błąd pobierania danych');
+      setState(() {
+        _hasError = true;
+        _isLoadingInitial = false;
+      });
+      _showErrorBanner('Błąd połączenia: $e');
     }
+  }
+
+  Future<void> _loadMoreData() async {
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    try {
+      final data = await PokeApiService.fetchPokemonList(
+        limit: _limit,
+        offset: _offset,
+      );
+      setState(() {
+        _pokemons.addAll(data);
+        _offset += _limit;
+        _isLoadingMore = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingMore = false;
+      });
+      _showErrorBanner('Błąd podczas pobierania kolejnych Pokemonów');
+    }
+  }
+
+  Future<void> _refreshData() async {
+    await _loadInitialData();
   }
 
   void _showErrorBanner(String message) {
@@ -70,87 +135,89 @@ class _UncaughtListScreenState extends State<UncaughtListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("Dzikie Pokemony")),
-      body: RefreshIndicator(
-        onRefresh: _refreshData,
-        child: FutureBuilder<List<PokemonListResult>>(
-          future: pokemonFuture,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
+      body: RefreshIndicator(onRefresh: _refreshData, child: _buildBody()),
+    );
+  }
 
-            if (snapshot.hasError) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
+  Widget _buildBody() {
+    if (_isLoadingInitial) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_hasError && _pokemons.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.wifi_off, size: 80, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text(
+              "Błąd połączenia",
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            ElevatedButton(
+              onPressed: _refreshData,
+              child: const Text("Odśwież"),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Expanded(
+          child: GridView.builder(
+            controller: _scrollController,
+            padding: const EdgeInsets.all(10),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+            ),
+            itemCount: _pokemons.length,
+            itemBuilder: (context, index) {
+              final poke = _pokemons[index];
+              return GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => PokemonDetailScreen(
+                        pokemonName: poke.name,
+                        pokemonId: poke.id,
+                      ),
+                    ),
+                  ).then((_) => setState(() {}));
+                },
+                child: Card(
+                  elevation: 4,
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.wifi_off, size: 80, color: Colors.grey),
-                      const SizedBox(height: 16),
-                      Text(
-                        "Błąd: ${snapshot.error}",
-                        style: Theme.of(context).textTheme.bodyLarge,
-                        textAlign: TextAlign.center,
+                      Image.network(
+                        poke.imageUrl,
+                        height: 80,
+                        errorBuilder: (c, e, s) => const Icon(Icons.error),
                       ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _refreshData,
-                        child: const Text("Odśwież"),
+                      const SizedBox(height: 10),
+                      Text(
+                        poke.name.toUpperCase(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
                 ),
               );
-            }
-
-            final pokemons = snapshot.data ?? [];
-            return GridView.builder(
-              padding: const EdgeInsets.all(10),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-              ),
-              itemCount: pokemons.length,
-              itemBuilder: (context, index) {
-                final poke = pokemons[index];
-                return GestureDetector(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => PokemonDetailScreen(
-                          pokemonName: poke.name,
-                          pokemonId: poke.id,
-                        ),
-                      ),
-                    ).then((_) => setState(() {})); // Odśwież po powrocie
-                  },
-                  child: Card(
-                    elevation: 4,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Image.network(
-                          poke.imageUrl,
-                          height: 80,
-                          errorBuilder: (c, e, s) => const Icon(Icons.error),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          poke.name.toUpperCase(),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            );
-          },
+            },
+          ),
         ),
-      ),
+        if (_isLoadingMore)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 20),
+            child: CircularProgressIndicator(),
+          ),
+      ],
     );
   }
 }
